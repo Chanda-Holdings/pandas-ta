@@ -57,24 +57,26 @@ def supertrend(
 
     hl2_ = hl2(high, low)
     matr = multiplier * atr(high, low, close, length)
-    lb = hl2_ - matr  # Lowerband
-    ub = hl2_ + matr  # Upperband
+    # Plain lists: a Series .iloc lookup costs about 100 times more per bar.
+    c = close.to_numpy().tolist()
+    lb = (hl2_ - matr).to_numpy().tolist()  # Lowerband
+    ub = (hl2_ + matr).to_numpy().tolist()  # Upperband
     for i in range(1, m):
-        if close.iloc[i] > ub.iloc[i - 1]:
+        if c[i] > ub[i - 1]:
             dir_[i] = 1
-        elif close.iloc[i] < lb.iloc[i - 1]:
+        elif c[i] < lb[i - 1]:
             dir_[i] = -1
         else:
             dir_[i] = dir_[i - 1]
-            if dir_[i] > 0 and lb.iloc[i] < lb.iloc[i - 1]:
-                lb.iloc[i] = lb.iloc[i - 1]
-            if dir_[i] < 0 and ub.iloc[i] > ub.iloc[i - 1]:
-                ub.iloc[i] = ub.iloc[i - 1]
+            if dir_[i] > 0 and lb[i] < lb[i - 1]:
+                lb[i] = lb[i - 1]
+            if dir_[i] < 0 and ub[i] > ub[i - 1]:
+                ub[i] = ub[i - 1]
 
         if dir_[i] > 0:
-            trend[i] = long[i] = lb.iloc[i]
+            trend[i] = long[i] = lb[i]
         else:
-            trend[i] = short[i] = ub.iloc[i]
+            trend[i] = short[i] = ub[i]
 
     trend[0] = nan
     dir_[:length] = [nan] * length

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from numpy import cos, exp, mean, nan, pi, roll, sin, sqrt, zeros
+from numpy import arange, array, cos, exp, nan, ones, pi, sin, sqrt, zeros
 from pandas import DataFrame, Series
 from pandas_ta._typing import DictLike, Int
 from pandas_ta.utils import v_offset, v_pos_default, v_series
@@ -120,22 +120,25 @@ def ebsw(
         c3 = -a1 ** 2
         c1 = 1 - c2 - c3
 
+        # Scalars instead of a 3-element array: numpy calls dominate the
+        # loop. numpy's mean of three values adds them left to right.
+        c = close.to_numpy().tolist()
+        f0, f1, f2 = filtHist.tolist()
         for i in range(length, m):
-            hp = 0.5 * (1 + alpha1) * (close[i] - lastClose) + alpha1 * lastHP
+            hp = 0.5 * (1 + alpha1) * (c[i] - lastClose) + alpha1 * lastHP
 
             # Rotate filters to overwrite oldest value
-            filtHist = roll(filtHist, -1)
-            filtHist[-1] = 0.5 * c1 * \
-                (hp + lastHP) + c2 * filtHist[1] + c3 * filtHist[0]
+            f0, f1 = f1, f2
+            f2 = 0.5 * c1 * (hp + lastHP) + c2 * f1 + c3 * f0
 
-            # Wave calculation
-            wave = mean(filtHist)
-            rms = sqrt(mean(filtHist ** 2))
+            # Wave calculation. A numpy rms keeps 0/0 a NaN, not an error.
+            wave = ((f0 + f1) + f2) / 3
+            rms = sqrt(((f0 * f0 + f1 * f1) + f2 * f2) / 3)
             wave = wave / rms
 
             # Update past values
             lastHP = hp
-            lastClose = close[i]
+            lastClose = c[i]
             result.append(wave)
 
     ebsw = Series(result, index=close.index)
@@ -199,28 +202,30 @@ def ebsw_extra(
     if close is None:
         return
     
-    # Initialize variables
-    hp = zeros(len(close))
-    filt = zeros(len(close))
-    
+    # Initialize variables. Plain lists: numpy element access is slow.
+    c = close.to_numpy().tolist()
+    hp = [0.0] * len(c)
+    filt = [0.0] * len(c)
+
     # Calculate alpha1
     alpha1 = (1 - sin(2 * pi / length)) / cos(2 * pi / length)
-    
+
     # High-pass filter
-    for i in range(1, len(close)):
-        hp[i] = 0.5 * (1 + alpha1) * (close[i] - close[i-1]) + alpha1 * hp[i-1]
-    
+    for i in range(1, len(c)):
+        hp[i] = 0.5 * (1 + alpha1) * (c[i] - c[i-1]) + alpha1 * hp[i-1]
+
     # Super Smoother Filter coefficients
     a1 = exp(-1.414 * pi / 10)
     b1 = 2 * a1 * cos(1.414 * pi / 10)
     c2 = b1
     c3 = -a1 * a1
     c1 = 1 - c2 - c3
-    
+
     # Apply Super Smoother Filter
-    for i in range(2, len(close)):
+    for i in range(2, len(c)):
         filt[i] = c1 * (hp[i] + hp[i-1]) / 2 + c2 * filt[i-1] + c3 * filt[i-2]
-    
+    filt = array(filt, dtype=float)
+
     # Calculate Wave and Power
     wave = Series(filt).rolling(window=3).mean()
     power = Series(filt**2).rolling(window=3).mean()
@@ -233,12 +238,23 @@ def ebsw_extra(
     
     # Divergence calculations
     def find_pivots(data, left, right):
+        """1 where a bar beats every neighbour within left/right bars, -1
+        where it is below all of them. NaN compares False, as before."""
         pivots = zeros(len(data))
-        for i in range(left, len(data) - right):
-            if all(data[i] > data[i-left:i]) and all(data[i] > data[i+1:i+right+1]):
-                pivots[i] = 1  # High
-            elif all(data[i] < data[i-left:i]) and all(data[i] < data[i+1:i+right+1]):
-                pivots[i] = -1  # Low
+        idx = arange(left, len(data) - right)
+        if not len(idx):
+            return pivots
+        x = data[idx]
+        high = ones(len(idx), dtype=bool)
+        low = ones(len(idx), dtype=bool)
+        for k in range(1, left + 1):
+            high &= x > data[idx - k]
+            low &= x < data[idx - k]
+        for k in range(1, right + 1):
+            high &= x > data[idx + k]
+            low &= x < data[idx + k]
+        pivots[idx[high]] = 1  # High
+        pivots[idx[low & ~high]] = -1  # Low
         return pivots
 
     pivots = find_pivots(wave.values, lbL, lbR)
@@ -269,7 +285,9 @@ def ebsw_extra(
         
         return bullish, bearish, hidden_bullish, hidden_bearish
 
-    bullish, bearish, hidden_bullish, hidden_bearish = calculate_divergence(close.values, wave.values, pivots)
+    bullish, bearish, hidden_bullish, hidden_bearish = calculate_divergence(
+        c, wave.to_numpy().tolist(), pivots.tolist()
+    )
     
     return DataFrame({
         'Wave': wave,
